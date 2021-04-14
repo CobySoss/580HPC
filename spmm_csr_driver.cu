@@ -143,13 +143,21 @@ int host_calc_sizec(CSR &mata, CSR &matb)
 	     {
 	     	int colB = matb.col_id[k];
 		std::tuple<int, int> rcpair(r, colB);
-		printf("%d %d\n", r, colB);
+		//printf("%d %d\n", r, colB);
 		row_column_in_c.insert(rcpair);
 	     }	     
 	 }	 
     }
     return row_column_in_c.size();
 }
+void test_spGEMM_densified_against_expected(double* a, double *b, unsigned int num ) {
+        for (unsigned int k = 0; k < num; ++k) {
+            if(std::abs(a[num] - b[num]) > 1e-1) {
+              std::cout << "error at index " << num << endl;
+            }
+        }
+    }
+
 
 int main(int argc, char *argv[]) {
     if(argc < 3) {
@@ -165,8 +173,7 @@ int main(int argc, char *argv[]) {
     std::cout << matb.nrows << ' ' << matb.ncols << ' ' << matb.nnz << ' ' << '\n';
 
     int nnz_c = host_calc_sizec(mata, matb);
-    printf("how big %d\n", nnz_c);
-    
+
     matc.values = (double*)malloc(nnz_c * sizeof(double));
     matc.col_id = (unsigned int*)malloc(nnz_c * sizeof(double));
     matc.row_indx = (unsigned int*)malloc((mata.nrows + 1) * sizeof(double));
@@ -174,9 +181,19 @@ int main(int argc, char *argv[]) {
     matc.ncols = matb.ncols;
     matc.nnz = nnz_c;
     host_csr_spmm(mata, matb, matc);
-     
+    printf("nnz c %d\n", matc.nnz);
+
+    //test SpGEMM result against expected dense matrix mult -- HOST
+    int nrowA, ncolA, nrowB, ncolB, nrowC, ncolC; 
+    double* denseCResultFromSpGEMM = getDenseMat(matc, &nrowC, &ncolC);    
+    double* denseB = getDenseMat(matb, &nrowB, &ncolB);
+    double* denseA = getDenseMat(mata, &nrowA, &nrowB);
+    double* expectedMat = DenseDenseMult(denseA, nrowA, ncolA, denseB, nrowB, ncolB, &nrowC, &ncolC);
+    test_spGEMM_densified_against_expected(expectedMat, denseCResultFromSpGEMM, nrowC * ncolC);
     
-   
+    free(denseCResultFromSpGEMM);
+    free(denseA);
+    free(denseB);
     free(mata.row_indx);
     free(mata.col_id);
     free(mata.values);
