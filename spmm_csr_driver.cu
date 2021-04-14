@@ -69,8 +69,55 @@ void print_CSR(CSR &mat) {
     }
 }
 
-void host_csr_spmm(CSR &mat, CSR &matb, CSR &matc) {
-    
+void host_csr_spmm(CSR &mata, CSR &matb, CSR &matc) {    
+   double* scatter = (double*)malloc(matc.ncols * sizeof(double));
+   for(unsigned int i = 0; i < matc.ncols; i++)
+   {
+      scatter[i] = -1.0;
+   }
+   int numValsC = 0;
+   
+   for(unsigned int r = 0; r < mata.nrows; r++)
+   {
+       unsigned int start_index_a = mata.row_indx[r];
+       unsigned int end_index_a = mata.row_indx[r+1];
+       for(unsigned int j = start_index_a; j < end_index_a; j++)
+       {
+          int colA = mata.col_id[j];
+	  int valA = mata.values[j];
+	  unsigned int start_index_b = matb.row_indx[colA];
+	  unsigned int end_index_b = matb.row_indx[colA + 1];
+	  for(unsigned int k = start_index_b; k < end_index_b; k++)
+	  {
+	     int colB =  matb.col_id[k];
+	     int valB = matb.values[k];
+	     if(scatter[colB] < 0.0)
+	     {
+	     	scatter[colB] = valB * valA;
+	     }
+	     else
+	     {
+	     	scatter[colB] += valB * valA;
+	     }
+	  }
+       }
+       matc.row_indx[r] = numValsC;
+       for(unsigned int i = 0; i < matc.ncols; i++)
+       {
+          if(scatter[i] >= 0.0)
+	  {
+             matc.values[numValsC] = scatter[i];
+	     matc.col_id[numValsC] = i;
+	     numValsC++;
+	  }
+       }
+       matc.row_indx[r + 1] = numValsC;
+       for(unsigned int i = 0; i < matc.ncols; i++)
+       {
+          scatter[i] = -1.0;
+       }
+   }
+   free(scatter);
 }
 
 __global__ void dev_csr_spmm(CSR mata, CSR matb, CSR matc,  unsigned int offset)
@@ -94,7 +141,6 @@ int host_calc_sizec(CSR &mata, CSR &matb)
 	     int ending_index_b = matb.row_indx[colA + 1];
              for(unsigned int k = starting_index_b; k < ending_index_b; k++)
 	     {
-	
 	     	int colB = matb.col_id[k];
 		std::tuple<int, int> rcpair(r, colB);
 		printf("%d %d\n", r, colB);
@@ -111,23 +157,29 @@ int main(int argc, char *argv[]) {
         exit(-1);
     }
 
-    CSR mat = read_matrix_market_to_CSR(argv[1]);
+    CSR mata= read_matrix_market_to_CSR(argv[1]);
     CSR matb = read_matrix_market_to_CSR(argv[2]);
     CSR matc;
     //print_CSR(mat);
-    std::cout << mat.nrows << ' ' << mat.ncols << ' ' << mat.nnz << ' ' << '\n';
-    std::cout << mat.nrows << ' ' << matb.ncols << ' ' << mat.nnz << ' ' << '\n';
+    std::cout << mata.nrows << ' ' << mata.ncols << ' ' << mata.nnz << ' ' << '\n';
+    std::cout << matb.nrows << ' ' << matb.ncols << ' ' << matb.nnz << ' ' << '\n';
 
-    int nnz_c = host_calc_sizec(mat, matb);
+    int nnz_c = host_calc_sizec(mata, matb);
     printf("how big %d\n", nnz_c);
     
-    host_csr_spmm(mat, matb, matc);
+    matc.values = (double*)malloc(nnz_c * sizeof(double));
+    matc.col_id = (unsigned int*)malloc(nnz_c * sizeof(double));
+    matc.row_indx = (unsigned int*)malloc((mata.nrows + 1) * sizeof(double));
+    matc.nrows = mata.nrows;
+    matc.ncols = matb.ncols;
+    matc.nnz = nnz_c;
+    host_csr_spmm(mata, matb, matc);
      
     
    
-    free(mat.row_indx);
-    free(mat.col_id);
-    free(mat.values);
+    free(mata.row_indx);
+    free(mata.col_id);
+    free(mata.values);
     
     return 0;
   }
