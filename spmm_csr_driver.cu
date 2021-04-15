@@ -12,6 +12,8 @@
 #include  <omp.h>
 #include <tuple>
 #include <set>
+#include <vector>
+#include <algorithm>
 
 void check_dmat(double* a, double *b, unsigned int n, unsigned int K, bool quit_on_err = true ) {
     for (unsigned int i = 0; i < n; ++i) {
@@ -113,18 +115,60 @@ void host_csr_spmm(CSR &mata, CSR &matb, CSR &matc) {
    free(scatter);
 }
 
-__global__ void dev_csr_spmm(CSR mata, CSR matb, CSR matc,  unsigned int offset)
+__global__ void dev_csr_spgemm(CSR mata, CSR matb, CSR matc,  int* scatter, int* workload)
 {
-	int row = offset + blockIdx.x * blockDim.x + threadIdx.x;
-	
+   int r = blockIdx.x * blockDim.x + threadIdx.x;
+   for(unsigned int i = 0; i < matc.ncols; i++)
+   {
+      scatter[i] = -1.0;
+   }
+   __syncthreads();
+   if(r < mata.nrows)
+   {
+   r = workload[r];
+   int numValsC = 0;
+   unsigned int start_index_a = mata.row_indx[r];
+   unsigned int end_index_a = mata.row_indx[r+1];
+   for(unsigned int j = start_index_a; j < end_index_a; j++)
+   {
+      int colA = mata.col_id[j];
+      int valA = mata.values[j];
+      unsigned int start_index_b = matb.row_indx[colA];
+      unsigned int end_index_b = matb.row_indx[colA + 1];
+      for(unsigned int k = start_index_b; k < end_index_b; k++)
+      {
+         int colB =  matb.col_id[k];
+         int valB = matb.values[k];
+         if(scatter[colB] < 0.0)
+         {
+            matc.col_id[numValsC] = colB;
+            matc.values[numValsC] = valB * valA;
+            scatter[colB] = numValsC;
+            numValsC = numValsC + 1;
+         }
+         else
+         {
+            int p = scatter[colB];
+            matc.values[p] += valB * valA;
+         }
+      }
+   }
+   matc.row_indx[r + 1] = numValsC;
+   for(unsigned int i = 0; i < matc.ncols; i++)
+   {
+      scatter[i] = -1.0;
+   }
+   }   
 }
 
-int host_calc_sizec(CSR &mata, CSR &matb)
+std::tuple<int, int*> host_calc_sizec(CSR &mata, CSR &matb)
 {
     int sizec = 0;
+    std::vector<std::tuple<int, int>> rowsByWorkload;
     std::set<std::tuple<int, int>> row_column_in_c;
     for(unsigned int r = 0; r < mata.nrows; r++)
     {
+	 int rowWork = 0;
          int starting_index = mata.row_indx[r];
          int ending_index = mata.row_indx[r + 1];
          for(unsigned int j = starting_index; j < ending_index; j++)
@@ -134,15 +178,23 @@ int host_calc_sizec(CSR &mata, CSR &matb)
 	     int ending_index_b = matb.row_indx[colA + 1];
              for(unsigned int k = starting_index_b; k < ending_index_b; k++)
 	     {
+		rowWork++;
 	     	int colB = matb.col_id[k];
 		std::tuple<int, int> rcpair(r, colB);
-		//printf("%d %d\n", r, colB);
 		row_column_in_c.insert(rcpair);
 	     }	     
-	 }	 
+	 }
+         rowsByWorkload.push_back(std::tuple<int, int>(rowWork, r));	 
     }
-    return row_column_in_c.size();
+    std::sort(rowsByWorkload.begin(), rowsByWorkload.end());
+    int* reorderedRows = (int*)malloc(rowsByWorkload.size() * sizeof(int));
+    for(unsigned int l = 0; l < rowsByWorkload.size(); l++)
+    {
+    	reorderedRows[l] = get<1>(rowsByWorkload[l]);
+    }
+    return std::tuple<int, int*>(row_column_in_c.size(), reorderedRows);
 }
+
 void test_spGEMM_densified_against_expected(double* a, double *b, unsigned int num ) {
         for (unsigned int k = 0; k < num; ++k) {
 	    if(std::abs(a[num] - b[num]) > 1e-1) {
@@ -151,7 +203,80 @@ void test_spGEMM_densified_against_expected(double* a, double *b, unsigned int n
         }
     }
 
+void runCuda(CSR &mata, CSR &matb, int c_nnz, int* workload_row_order)
+{
+    int* scatter;
+    int* d_workload_row_order;
+    CSR d_mata, d_matb, d_matc;
+    d_mata.nrows = mata.nrows;
+    d_mata.ncols = mata.ncols;
+    d_mata.nnz = mata.nnz;
+    cudaMalloc(&d_mata.values, (mata.nnz * sizeof(double)));
+    cudaMalloc(&d_mata.col_id, (mata.nnz * sizeof(int)));
+    cudaMalloc(&d_mata.row_indx, (mata.nrows + 1) * sizeof(int));
+    d_matb.nrows = matb.nrows;
+    d_matb.ncols = matb.ncols;
+    d_matb.nnz = matb.nnz;
+    cudaMalloc(&d_matb.values, (matb.nnz * sizeof(double)));
+    cudaMalloc(&d_matb.col_id, (matb.nnz * sizeof(int)));
+    cudaMalloc(&d_matb.row_indx, (matb.nrows + 1) * sizeof(int));
+    d_matc.nrows = mata.nrows;
+    d_matc.ncols = matb.ncols;
+    d_matc.nnz = c_nnz;
+    cudaMalloc(&scatter, (matb.ncols * sizeof(int)));
+    cudaMalloc(&d_workload_row_order, mata.nrows * sizeof(int));
+    cudaMalloc(&d_matc.values, (c_nnz * sizeof(double)));
+    cudaMalloc(&d_matc.col_id, (c_nnz * sizeof(int)));
+    cudaMalloc(&d_matc.row_indx, (mata.nrows + 1) * sizeof(int));
+    
+    cudaMemcpy(d_mata.values, mata.values, (mata.nnz * sizeof(double)), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_mata.col_id, mata.col_id, (mata.nnz * sizeof(int)), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_mata.row_indx, mata.row_indx, (mata.nrows + 1) * sizeof(int), cudaMemcpyHostToDevice);
 
+    cudaMemcpy(d_matb.values, matb.values, (matb.nnz * sizeof(double)), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_matb.col_id, matb.col_id, (matb.nnz * sizeof(int)), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_matb.row_indx, matb.row_indx, (matb.nrows + 1) * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_workload_row_order, workload_row_order, mata.nrows * sizeof(int), cudaMemcpyHostToDevice);
+
+    dim3 block;
+    block.x = 128;
+    dim3 grid;
+    grid.x = ceil(mata.nrows / 128.0);
+    dev_csr_spgemm<<<grid, block>>>(d_mata,d_matb, d_matc, scatter, d_workload_row_order);    
+    
+    CSR matc;
+    matc.nnz = d_matc.nnz;
+    matc.nrows = d_matc.nrows;
+    matc.ncols = d_matc.ncols;
+    matc.values = (double*)malloc(d_matc.nnz * sizeof(double));
+    matc.col_id = (unsigned int*)malloc(d_matc.nnz * sizeof(int));
+    matc.row_indx = (unsigned int*)malloc((d_matc.nrows +1) * sizeof(int));
+    cudaMemcpy(matc.values, d_matc.values, (d_matc.nnz * sizeof(double)), cudaMemcpyDeviceToHost);
+    cudaMemcpy(matc.col_id, d_matc.col_id, (d_matc.nnz * sizeof(int)), cudaMemcpyDeviceToHost);
+    cudaMemcpy(matc.row_indx, d_matc.row_indx, ((d_matc.nrows + 1) * sizeof(int)), cudaMemcpyDeviceToHost);
+   
+    //test device spGEMM
+    int nrowA, ncolA, nrowB, ncolB, nrowC, ncolC;
+    double* denseCResultFromSpGEMM = getDenseMat(matc, &nrowC, &ncolC);
+    double* denseB = getDenseMat(matb, &nrowB, &ncolB);
+    double* denseA = getDenseMat(mata, &nrowA, &nrowB);
+    double* expectedMat = DenseDenseMult(denseA, nrowA, ncolA, denseB, nrowB, ncolB, &nrowC, &ncolC);
+    test_spGEMM_densified_against_expected(expectedMat, denseCResultFromSpGEMM, nrowC * ncolC);
+   
+
+    cudaFree(d_mata.values);
+    cudaFree(d_mata.col_id);
+    cudaFree(d_mata.row_indx);
+   
+    cudaFree(d_matb.values);
+    cudaFree(d_matb.col_id);
+    cudaFree(d_matb.row_indx);
+
+   cudaFree(d_matc.values);
+   cudaFree(d_matc.col_id);
+   cudaFree(d_matc.row_indx);
+
+}	
 int main(int argc, char *argv[]) {
     if(argc < 3) {
         std::cerr << "usage ./exec inputfile K  " << std::endl;
@@ -165,8 +290,8 @@ int main(int argc, char *argv[]) {
     std::cout << mata.nrows << ' ' << mata.ncols << ' ' << mata.nnz << ' ' << '\n';
     std::cout << matb.nrows << ' ' << matb.ncols << ' ' << matb.nnz << ' ' << '\n';
 
-    int nnz_c = host_calc_sizec(mata, matb);
-
+    std::tuple<int, int*> optInfo = host_calc_sizec(mata, matb);
+    int nnz_c = get<0>(optInfo);
     matc.values = (double*)malloc(nnz_c * sizeof(double));
     matc.col_id = (unsigned int*)malloc(nnz_c * sizeof(double));
     matc.row_indx = (unsigned int*)malloc((mata.nrows + 1) * sizeof(double));
@@ -182,14 +307,19 @@ int main(int argc, char *argv[]) {
     double* denseB = getDenseMat(matb, &nrowB, &ncolB);
     double* denseA = getDenseMat(mata, &nrowA, &nrowB);
     double* expectedMat = DenseDenseMult(denseA, nrowA, ncolA, denseB, nrowB, ncolB, &nrowC, &ncolC);
-    test_spGEMM_densified_against_expected(expectedMat, denseCResultFromSpGEMM, nrowC * ncolC);
+    test_spGEMM_densified_against_expected(expectedMat, denseCResultFromSpGEMM, nrowC * ncolC); 
     
+    runCuda(mata, matb, nnz_c, get<1>(optInfo));
+    free(get<1>(optInfo));
     free(denseCResultFromSpGEMM);
     free(denseA);
     free(denseB);
     free(mata.row_indx);
     free(mata.col_id);
     free(mata.values);
+
+    
+
     
     return 0;
-  }
+}
