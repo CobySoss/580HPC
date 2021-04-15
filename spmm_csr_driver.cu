@@ -75,8 +75,7 @@ void host_csr_spmm(CSR &mata, CSR &matb, CSR &matc) {
    {
       scatter[i] = -1.0;
    }
-   int numValsC = 0;
-   
+   int numValsC = 0; 
    for(unsigned int r = 0; r < mata.nrows; r++)
    {
        unsigned int start_index_a = mata.row_indx[r];
@@ -93,28 +92,23 @@ void host_csr_spmm(CSR &mata, CSR &matb, CSR &matc) {
 	     int valB = matb.values[k];
 	     if(scatter[colB] < 0.0)
 	     {
-	     	scatter[colB] = valB * valA;
+		matc.col_id[numValsC] = colB;
+		matc.values[numValsC] = valB * valA;
+		scatter[colB] = numValsC;
+		numValsC = numValsC + 1;
 	     }
 	     else
 	     {
-	     	scatter[colB] += valB * valA;
+		int p = scatter[colB];
+	     	matc.col_id[p] = p;
+		matc.values[p] = valB * valA;
 	     }
-	  }
-       }
-       matc.row_indx[r] = numValsC;
-       for(unsigned int i = 0; i < matc.ncols; i++)
-       {
-          if(scatter[i] >= 0.0)
-	  {
-             matc.values[numValsC] = scatter[i];
-	     matc.col_id[numValsC] = i;
-	     numValsC++;
 	  }
        }
        matc.row_indx[r + 1] = numValsC;
        for(unsigned int i = 0; i < matc.ncols; i++)
        {
-          scatter[i] = -1.0;
+         scatter[i] = -1.0;
        }
    }
    free(scatter);
@@ -152,7 +146,7 @@ int host_calc_sizec(CSR &mata, CSR &matb)
 }
 void test_spGEMM_densified_against_expected(double* a, double *b, unsigned int num ) {
         for (unsigned int k = 0; k < num; ++k) {
-            if(std::abs(a[num] - b[num]) > 1e-1) {
+	    if(std::abs(a[num] - b[num]) > 1e-1) {
               std::cout << "error at index " << num << endl;
             }
         }
