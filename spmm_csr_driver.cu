@@ -100,8 +100,7 @@ void host_csr_spmm(CSR &mata, CSR &matb, CSR &matc) {
 	     else
 	     {
 		int p = scatter[colB];
-	     	matc.col_id[p] = p;
-		matc.values[p] = valB * valA;
+		matc.values[p] += valB * valA;
 	     }
 	  }
        }
