@@ -113,11 +113,12 @@ __global__ void dev_csr_spmm(CSR mat, double* mat_in, double* mat_out, unsigned 
 }
 
 int main(int argc, char *argv[]) {
-    if(argc < 3) {
-        std::cerr << "usage ./exec M N  " << std::endl;
+    if(argc < 4) {
+        std::cerr << "usage ./exec M N S" << std::endl;
         exit(-1);
     }
 
+    unsigned int S = std::atoi(argv[3]);
     unsigned int N = std::atoi(argv[2]);
     unsigned int M = std::atoi(argv[1]);
     std::string s;
@@ -126,7 +127,7 @@ int main(int argc, char *argv[]) {
     {
        for(int j = 1; j <= N; j++)
        {
-       	  if(fastrand() % 5 == 0)
+       	  if(fastrand() % S == 0)
 	  {
 	     nnz+=1;
 	     s += std::to_string(i) + " " + std::to_string(j) + " " + std::to_string(fastrand() % 3) + "\n";
