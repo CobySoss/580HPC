@@ -4,23 +4,13 @@
 
 
 CUCSRSRC=spmm_csr_driver.cu
-CUCSCSRC=spmm_csc_driver.cu
-CUOPTSRC=spmm_opt_driver.cu
 
 CPPSRC=mm_helper.cpp
 
 EXECCSR=spmm_csr_driver
-EXECCSC=spmm_csc_driver
-EXECOPT=spmm_opt_driver
 
 OBJSCSR=$(CUCSRSRC:.cu=.o)
 OBJSCSR+=$(CPPSRC:.cpp=.o)
-
-OBJSCSC=$(CUCSCSRC:.cu=.o)
-OBJSCSC+=$(CPPSRC:.cpp=.o)
-
-OBJSOPT=$(CUOPTSRC:.cu=.o)
-OBJSOPT+=$(CPPSRC:.cpp=.o)
 
 NVCCFLAGS=-arch=sm_60 -O3 -lgomp
 
@@ -35,12 +25,6 @@ all: $(EXECCSR) $(EXECCSC) $(EXECOPT)
 $(EXECCSR): $(OBJSCSR)
 	$(CC) $(NVCCFLAGS) $^ -o $@
 
-$(EXECCSC): $(OBJSCSC)
-	$(CC) $(NVCCFLAGS) $^ -o $@
-
-$(EXECOPT): $(OBJSOPT)
-	$(CC) $(NVCCFLAGS) $^ -o $@
-
 %.o : %.cu
 	$(CC)  $(NVCCFLAGS) -c $< -o $@
 
@@ -48,7 +32,7 @@ $(EXECOPT): $(OBJSOPT)
 	$(HCC) -O3 -c $< -o $@ -std=c++11
 
 clean:
-	rm -f $(EXECCSR) $(OBJSCSR) $(EXECCSC) $(OBJSCSC) $(EXECOPT) $(OBJSOPT) 
+	rm -f $(EXECCSR) $(OBJSCSR) 
 
 
 # vim:ft=make

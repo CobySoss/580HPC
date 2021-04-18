@@ -163,7 +163,6 @@ __global__ void dev_csr_spgemm(CSR mata, CSR matb, CSR matc,  int* scatter, int*
 
 std::tuple<int, int*> host_calc_sizec(CSR &mata, CSR &matb)
 {
-    int sizec = 0;
     std::vector<std::tuple<int, int>> rowsByWorkload;
     std::set<std::tuple<int, int>> row_column_in_c;
     for(unsigned int r = 0; r < mata.nrows; r++)
@@ -205,7 +204,7 @@ void test_spGEMM_densified_against_expected(double* a, double *b, unsigned int n
 
 void runCuda(CSR &mata, CSR &matb, int c_nnz, int* workload_row_order)
 {
-    int* scatter;
+    int* d_scatter;
     int* d_workload_row_order;
     CSR d_mata, d_matb, d_matc;
     d_mata.nrows = mata.nrows;
@@ -223,27 +222,43 @@ void runCuda(CSR &mata, CSR &matb, int c_nnz, int* workload_row_order)
     d_matc.nrows = mata.nrows;
     d_matc.ncols = matb.ncols;
     d_matc.nnz = c_nnz;
-    cudaMalloc(&scatter, (matb.ncols * sizeof(int)));
+    cudaMalloc(&d_scatter, (matb.ncols * sizeof(int)));
     cudaMalloc(&d_workload_row_order, mata.nrows * sizeof(int));
     cudaMalloc(&d_matc.values, (c_nnz * sizeof(double)));
     cudaMalloc(&d_matc.col_id, (c_nnz * sizeof(int)));
     cudaMalloc(&d_matc.row_indx, (mata.nrows + 1) * sizeof(int));
+    cudaStream_t stream1;
+    cudaStream_t stream2;
+    cudaEvent_t streamOneMemcpyDone;
+    cudaEvent_t streamTwoMemcpyDone;
+    cudaEvent_t kernel_start;
+    cudaEvent_t kernel_end;
+    cudaEventCreate(&kernel_start);
+    cudaEventCreate(&kernel_end);
+    cudaEventCreate(&streamOneMemcpyDone);
+    cudaEventCreate(&streamTwoMemcpyDone);
+    cudaStreamCreate(&stream1);
+    cudaStreamCreate(&stream2);
+    double time_start = omp_get_wtime();
+    cudaMemcpyAsync(d_mata.values, mata.values, (mata.nnz * sizeof(double)), cudaMemcpyHostToDevice, stream1);
+    cudaMemcpyAsync(d_mata.col_id, mata.col_id, (mata.nnz * sizeof(int)), cudaMemcpyHostToDevice, stream2);
+    cudaMemcpyAsync(d_mata.row_indx, mata.row_indx, (mata.nrows + 1) * sizeof(int), cudaMemcpyHostToDevice, stream1);
     
-    cudaMemcpy(d_mata.values, mata.values, (mata.nnz * sizeof(double)), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_mata.col_id, mata.col_id, (mata.nnz * sizeof(int)), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_mata.row_indx, mata.row_indx, (mata.nrows + 1) * sizeof(int), cudaMemcpyHostToDevice);
-
-    cudaMemcpy(d_matb.values, matb.values, (matb.nnz * sizeof(double)), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_matb.col_id, matb.col_id, (matb.nnz * sizeof(int)), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_matb.row_indx, matb.row_indx, (matb.nrows + 1) * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(d_workload_row_order, workload_row_order, mata.nrows * sizeof(int), cudaMemcpyHostToDevice);
-
+    cudaMemcpyAsync(d_matb.values, matb.values, (matb.nnz * sizeof(double)), cudaMemcpyHostToDevice, stream2);
+    cudaMemcpyAsync(d_matb.col_id, matb.col_id, (matb.nnz * sizeof(int)), cudaMemcpyHostToDevice, stream1);
+    cudaMemcpyAsync(d_matb.row_indx, matb.row_indx, (matb.nrows + 1) * sizeof(int), cudaMemcpyHostToDevice, stream2);
+    cudaMemcpyAsync(d_workload_row_order, workload_row_order, mata.nrows * sizeof(int), cudaMemcpyHostToDevice, stream1);
+    cudaEventRecord(streamOneMemcpyDone, stream1);
+    cudaEventRecord(streamTwoMemcpyDone, stream2);
     dim3 block;
     block.x = 128;
     dim3 grid;
     grid.x = ceil(mata.nrows / 128.0);
-    dev_csr_spgemm<<<grid, block>>>(d_mata,d_matb, d_matc, scatter, d_workload_row_order);    
-    
+    cudaEventSynchronize(streamOneMemcpyDone);
+    cudaEventSynchronize(streamTwoMemcpyDone);
+    cudaEventRecord(kernel_start, stream1);
+    dev_csr_spgemm<<<grid, block, 0, stream1>>>(d_mata,d_matb, d_matc, d_scatter, d_workload_row_order);    
+    cudaEventRecord(kernel_end, stream1);
     CSR matc;
     matc.nnz = d_matc.nnz;
     matc.nrows = d_matc.nrows;
@@ -251,18 +266,29 @@ void runCuda(CSR &mata, CSR &matb, int c_nnz, int* workload_row_order)
     matc.values = (double*)malloc(d_matc.nnz * sizeof(double));
     matc.col_id = (unsigned int*)malloc(d_matc.nnz * sizeof(int));
     matc.row_indx = (unsigned int*)malloc((d_matc.nrows +1) * sizeof(int));
+    cudaStreamSynchronize(stream1);
+    float time;
+    cudaEventElapsedTime(&time, kernel_start, kernel_end);
+    printf("Kernel time: %f ms\n", time);
     cudaMemcpy(matc.values, d_matc.values, (d_matc.nnz * sizeof(double)), cudaMemcpyDeviceToHost);
     cudaMemcpy(matc.col_id, d_matc.col_id, (d_matc.nnz * sizeof(int)), cudaMemcpyDeviceToHost);
     cudaMemcpy(matc.row_indx, d_matc.row_indx, ((d_matc.nrows + 1) * sizeof(int)), cudaMemcpyDeviceToHost);
-   
+    double time_end = omp_get_wtime();
+    printf("total time: %lf seconds\n", time_end - time_start);
     //test device spGEMM
-    int nrowA, ncolA, nrowB, ncolB, nrowC, ncolC;
+    /*
+    int nrowA = 0;
+    int ncolA = 0;
+    int nrowB = 0; 
+    int ncolB = 0; 
+    int nrowC = 0;
+    int ncolC = 0;
     double* denseCResultFromSpGEMM = getDenseMat(matc, &nrowC, &ncolC);
     double* denseB = getDenseMat(matb, &nrowB, &ncolB);
     double* denseA = getDenseMat(mata, &nrowA, &nrowB);
     double* expectedMat = DenseDenseMult(denseA, nrowA, ncolA, denseB, nrowB, ncolB, &nrowC, &ncolC);
     test_spGEMM_densified_against_expected(expectedMat, denseCResultFromSpGEMM, nrowC * ncolC);
-   
+   */
 
     cudaFree(d_mata.values);
     cudaFree(d_mata.col_id);
@@ -300,20 +326,25 @@ int main(int argc, char *argv[]) {
     matc.nnz = nnz_c;
     host_csr_spmm(mata, matb, matc);
     printf("nnz c %d\n", matc.nnz);
-
+/*
     //test SpGEMM result against expected dense matrix mult -- HOST
-    int nrowA, ncolA, nrowB, ncolB, nrowC, ncolC; 
+    int nrowA = 0; 
+    int ncolA = 0;
+    int nrowB = 0;
+    int ncolB = 0; 
+    int nrowC = 0; 
+    int ncolC = 0; 
     double* denseCResultFromSpGEMM = getDenseMat(matc, &nrowC, &ncolC);    
     double* denseB = getDenseMat(matb, &nrowB, &ncolB);
     double* denseA = getDenseMat(mata, &nrowA, &nrowB);
     double* expectedMat = DenseDenseMult(denseA, nrowA, ncolA, denseB, nrowB, ncolB, &nrowC, &ncolC);
     test_spGEMM_densified_against_expected(expectedMat, denseCResultFromSpGEMM, nrowC * ncolC); 
-    
+  */  
     runCuda(mata, matb, nnz_c, get<1>(optInfo));
     free(get<1>(optInfo));
-    free(denseCResultFromSpGEMM);
-    free(denseA);
-    free(denseB);
+    //free(denseCResultFromSpGEMM);
+    //free(denseA);
+    //free(denseB);
     free(mata.row_indx);
     free(mata.col_id);
     free(mata.values);
