@@ -118,46 +118,55 @@ void host_csr_spmm(CSR &mata, CSR &matb, CSR &matc) {
 __global__ void dev_csr_spgemm(CSR mata, CSR matb, CSR matc,  int* scatter, int* workload)
 {
    int r = blockIdx.x * blockDim.x + threadIdx.x;
-   for(unsigned int i = 0; i < matc.ncols; i++)
+   __shared__ int numValsC;
+   if(threadIdx.x == 0)
    {
-      scatter[i] = -1.0;
+       numValsC = 0;
+       matc.row_indx[0] = 0;
+       for(unsigned int i = 0; i < matc.ncols; i++)
+       {
+          scatter[blockIdx.x * blockDim.x + i] = -1.0;
+       }
    }
    __syncthreads();
    if(r < mata.nrows)
    {
-   r = workload[r];
-   int numValsC = 0;
-   unsigned int start_index_a = mata.row_indx[r];
-   unsigned int end_index_a = mata.row_indx[r+1];
-   for(unsigned int j = start_index_a; j < end_index_a; j++)
-   {
-      int colA = mata.col_id[j];
-      int valA = mata.values[j];
-      unsigned int start_index_b = matb.row_indx[colA];
-      unsigned int end_index_b = matb.row_indx[colA + 1];
-      for(unsigned int k = start_index_b; k < end_index_b; k++)
-      {
-         int colB =  matb.col_id[k];
-         int valB = matb.values[k];
-         if(scatter[colB] < 0.0)
-         {
-            matc.col_id[numValsC] = colB;
-            matc.values[numValsC] = valB * valA;
-            scatter[colB] = numValsC;
-            numValsC = numValsC + 1;
-         }
-         else
-         {
-            int p = scatter[colB];
-            matc.values[p] += valB * valA;
-         }
-      }
-   }
-   matc.row_indx[r + 1] = numValsC;
-   for(unsigned int i = 0; i < matc.ncols; i++)
-   {
-      scatter[i] = -1.0;
-   }
+        //r = workload[r];
+   	unsigned int start_index_a = mata.row_indx[r];
+   	unsigned int end_index_a = mata.row_indx[r+1];
+   	for(unsigned int j = start_index_a; j < end_index_a; j++)
+   	{
+      	    numValsC = matc.row_indx[r];
+            int colA = mata.col_id[j];
+            int valA = mata.values[j];
+            unsigned int start_index_b = matb.row_indx[colA];
+            unsigned int end_index_b = matb.row_indx[colA + 1];
+            int tempC = 0;
+            for(unsigned int k = start_index_b; k < end_index_b; k++)
+            {
+                int colB =  matb.col_id[k];
+                int valB = matb.values[k];
+                if(scatter[blockIdx.x * blockDim.x + colB] < 0.0)
+                {
+                    int prevValsC = atomicAdd(&numValsC, 1);
+                    matc.col_id[prevValsC] = colB;
+                    tempC = valB * valA;
+	            //matc.values[prevValsC] = valB * valA;
+                    scatter[blockIdx.x * blockDim.x + colB] = prevValsC;
+                }
+                else
+                {
+                    tempC += valB * valA;
+                    int p = scatter[blockIdx.x * blockDim.x + colB];
+                    matc.values[p] = tempC;
+                }
+            } 
+        }
+        matc.row_indx[r + 1] = numValsC;
+        for(unsigned int i = 0; i < matc.ncols; i++)
+        {
+            scatter[blockIdx.x * blockDim.x + i] = -1.0;
+        }
    }   
 }
 
@@ -222,7 +231,7 @@ void runCuda(CSR &mata, CSR &matb, int c_nnz, int* workload_row_order)
     d_matc.nrows = mata.nrows;
     d_matc.ncols = matb.ncols;
     d_matc.nnz = c_nnz;
-    cudaMalloc(&d_scatter, (matb.ncols * sizeof(int)));
+    cudaMalloc(&d_scatter, (matb.ncols * ceil(mata.nrows / 128.0) * sizeof(int)));
     cudaMalloc(&d_workload_row_order, mata.nrows * sizeof(int));
     cudaMalloc(&d_matc.values, (c_nnz * sizeof(double)));
     cudaMalloc(&d_matc.col_id, (c_nnz * sizeof(int)));
@@ -275,8 +284,9 @@ void runCuda(CSR &mata, CSR &matb, int c_nnz, int* workload_row_order)
     cudaMemcpy(matc.row_indx, d_matc.row_indx, ((d_matc.nrows + 1) * sizeof(int)), cudaMemcpyDeviceToHost);
     double time_end = omp_get_wtime();
     printf("total time: %lf seconds\n", time_end - time_start);
-    //test device spGEMM
     /*
+    //test device spGEMM
+   
     int nrowA = 0;
     int ncolA = 0;
     int nrowB = 0; 
