@@ -151,7 +151,6 @@ __global__ void dev_csr_spgemm(CSR mata, CSR matb, CSR matc,  int* scatter, int*
                     int prevValsC = atomicAdd(&numValsC, 1);
                     matc.col_id[prevValsC] = colB;
                     tempC = valB * valA;
-	            //matc.values[prevValsC] = valB * valA;
                     scatter[blockIdx.x * blockDim.x + colB] = prevValsC;
                 }
                 else
