@@ -131,7 +131,7 @@ __global__ void dev_csr_spgemm(CSR mata, CSR matb, CSR matc,  int* scatter, int*
    __syncthreads();
    if(r < mata.nrows)
    {
-        //r = workload[r];
+        r = workload[r];
    	unsigned int start_index_a = mata.row_indx[r];
    	unsigned int end_index_a = mata.row_indx[r+1];
    	for(unsigned int j = start_index_a; j < end_index_a; j++)
@@ -283,7 +283,7 @@ void runCuda(CSR &mata, CSR &matb, int c_nnz, int* workload_row_order)
     cudaMemcpy(matc.row_indx, d_matc.row_indx, ((d_matc.nrows + 1) * sizeof(int)), cudaMemcpyDeviceToHost);
     double time_end = omp_get_wtime();
     printf("total time: %lf seconds\n", time_end - time_start);
-    /*
+    
     //test device spGEMM
    
     int nrowA = 0;
@@ -297,7 +297,7 @@ void runCuda(CSR &mata, CSR &matb, int c_nnz, int* workload_row_order)
     double* denseA = getDenseMat(mata, &nrowA, &nrowB);
     double* expectedMat = DenseDenseMult(denseA, nrowA, ncolA, denseB, nrowB, ncolB, &nrowC, &ncolC);
     test_spGEMM_densified_against_expected(expectedMat, denseCResultFromSpGEMM, nrowC * ncolC);
-   */
+   
 
     cudaFree(d_mata.values);
     cudaFree(d_mata.col_id);
