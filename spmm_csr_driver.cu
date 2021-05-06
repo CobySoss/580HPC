@@ -284,8 +284,8 @@ void runCuda(CSR &mata, CSR &matb, int c_nnz, int* workload_row_order)
     double time_end = omp_get_wtime();
     printf("total time: %lf seconds\n", time_end - time_start);
     
-    //test device spGEMM
-   
+    //test device spGEMM against dense matrix result
+    /*   
     int nrowA = 0;
     int ncolA = 0;
     int nrowB = 0; 
@@ -297,7 +297,7 @@ void runCuda(CSR &mata, CSR &matb, int c_nnz, int* workload_row_order)
     double* denseA = getDenseMat(mata, &nrowA, &nrowB);
     double* expectedMat = DenseDenseMult(denseA, nrowA, ncolA, denseB, nrowB, ncolB, &nrowC, &ncolC);
     test_spGEMM_densified_against_expected(expectedMat, denseCResultFromSpGEMM, nrowC * ncolC);
-   
+   */
 
     cudaFree(d_mata.values);
     cudaFree(d_mata.col_id);
